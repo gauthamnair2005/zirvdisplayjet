@@ -47,20 +47,81 @@ static uint16_t vbe_read(uint16_t index)
 /* ── MAEM master key (derived at boot from hardware seed) ───────────────── */
 static uint8_t g_master_key[DJ_KEY_SIZE];
 
+/* CPUID leaf 1 → RDRAND bit is ECX[30] */
+static int cpu_has_rdrand(void)
+{
+    uint32_t eax, ebx, ecx, edx;
+    __asm__ volatile("cpuid"
+                     : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx)
+                     : "a"(1)
+                     : "memory");
+    (void)eax; (void)ebx; (void)edx;
+    return (ecx >> 30) & 1;
+}
+
+/* simple xorshift64 PRNG for fallback when RDRAND is absent */
+static uint64_t xorshift64(uint64_t *s)
+{
+    uint64_t x = *s;
+    x ^= x << 13; x ^= x >> 7; x ^= x << 17;
+    *s = x;
+    return x;
+}
+
+static void get_random_bytes(uint8_t *buf, size_t len)
+{
+    static int      has_rdrand = -1;
+    static uint64_t prng_state;
+
+    if (has_rdrand < 0) {
+        has_rdrand = cpu_has_rdrand();
+        if (!has_rdrand) {
+            __asm__ volatile("rdtsc" : "=a"(((uint32_t *)&prng_state)[0]),
+                                      "=d"(((uint32_t *)&prng_state)[1]));
+        }
+    }
+
+    if (has_rdrand) {
+        uint32_t rnd;
+        for (size_t i = 0; i < len; i += 4) {
+            __asm__ volatile("rdrand %0" : "=r"(rnd));
+            uint8_t b0 = (uint8_t)rnd;
+            uint8_t b1 = (uint8_t)(rnd >> 8);
+            uint8_t b2 = (uint8_t)(rnd >> 16);
+            uint8_t b3 = (uint8_t)(rnd >> 24);
+            size_t remain = len - i;
+            if (remain >= 4) {
+                buf[i]     = b0;
+                buf[i + 1] = b1;
+                buf[i + 2] = b2;
+                buf[i + 3] = b3;
+            } else {
+                if (remain > 0) buf[i]     = b0;
+                if (remain > 1) buf[i + 1] = b1;
+                if (remain > 2) buf[i + 2] = b2;
+            }
+        }
+    } else {
+        uint64_t r;
+        for (size_t i = 0; i < len; i += 8) {
+            r = xorshift64(&prng_state);
+            size_t remain = len - i;
+            for (size_t j = 0; j < remain && j < 8; j++)
+                buf[i + j] = (uint8_t)(r >> (j * 8));
+        }
+    }
+}
+
 static void maem_init(void)
 {
     uint8_t seed[32];
-    uint32_t tsc_lo, tsc_hi;
-    uint64_t tsc;
+    uint64_t tsc = 0;
+    __asm__ volatile("rdtsc" : "=a"(((uint32_t *)&tsc)[0]),
+                                "=d"(((uint32_t *)&tsc)[1]));
 
-    __asm__ volatile("rdtsc" : "=a"(tsc_lo), "=d"(tsc_hi));
-    tsc = ((uint64_t)tsc_hi << 32) | tsc_lo;
-
-    for (int i = 0; i < 32; i++) {
-        uint32_t rnd = 0;
-        __asm__ volatile("rdrand %0" : "=r"(rnd));
-        seed[i] = (uint8_t)(rnd ^ (tsc >> (i * 8 % 64)));
-    }
+    get_random_bytes(seed, sizeof(seed));
+    for (int i = 0; i < 32; i++)
+        seed[i] ^= (uint8_t)(tsc >> (i * 8 % 64));
 
     dj_hkdf((const uint8_t *)"DisplayJet MAEM v1", 18,
              seed, 32, NULL, 0, g_master_key, DJ_KEY_SIZE);
@@ -76,11 +137,7 @@ static void maem_derive_surface_key(dj_surface_t *s)
              (const uint8_t *)&s->id, sizeof(s->id),
              info, 8, s->key, DJ_KEY_SIZE);
 
-    for (int i = 0; i < 12; i++) {
-        uint32_t rnd = 0;
-        __asm__ volatile("rdrand %0" : "=r"(rnd));
-        s->nonce[i] = (uint8_t)rnd;
-    }
+    get_random_bytes(s->nonce, DJ_NONCE_SIZE);
     s->access_counter = 0;
 }
 
