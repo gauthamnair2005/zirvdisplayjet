@@ -2,6 +2,7 @@
 #define ZIRVIUM_DRIVERS_DISPLAYJET_DISPLAYJET_H
 
 #include <stdint.h>
+#include <stddef.h>
 #include <stdbool.h>
 
 #define DJ_MAX_SURFACES      32
