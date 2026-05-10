@@ -7,6 +7,9 @@
 #define DJ_MAX_SURFACES      32
 #define DJ_NAME_LEN          64
 #define DJ_CONNECTOR_NAME    64
+#define DJ_KEY_SIZE          32
+#define DJ_NONCE_SIZE        12
+#define DJ_ACCESS_KEY_SIZE   32
 
 typedef enum {
     DJ_FORMAT_RGBX8888 = 0,
@@ -21,6 +24,12 @@ typedef struct {
     dj_format_t format;
     void    *buffer;
     size_t   buffer_size;
+
+    /* MAEM: per-surface encryption */
+    uint8_t  key[DJ_KEY_SIZE];
+    uint8_t  nonce[DJ_NONCE_SIZE];
+    uint32_t access_counter;
+
     int      owner_pid;
     bool     used;
 } dj_surface_t;
@@ -42,6 +51,12 @@ typedef struct {
     uint8_t  bpp;
 } dj_surface_info_t;
 
+typedef struct {
+    uint8_t  key[DJ_ACCESS_KEY_SIZE];
+    uint32_t surface_id;
+    uint32_t counter;
+} dj_access_grant_t;
+
 /* DisplayJet syscall numbers */
 #define SYS_DJ_CONNECT         110
 #define SYS_DJ_DISCONNECT      111
@@ -52,18 +67,24 @@ typedef struct {
 #define SYS_DJ_SURFACE_WRITE   116
 #define SYS_DJ_SURFACE_READ    117
 #define SYS_DJ_LIST_SURFACES   118
+#define SYS_DJ_REQUEST_ACCESS  119
+#define SYS_DJ_GRANT_ACCESS    120
 
 /* Kernel driver API */
 void displayjet_init(void);
-void displayjet_set_framebuffer(void *fb_virt, uint32_t width, uint32_t height, uint32_t stride, uint8_t bpp);
+void displayjet_set_framebuffer(void *fb_virt, uint32_t width,
+                                 uint32_t height, uint32_t stride, uint8_t bpp);
 int  displayjet_connect(int pid);
 int  displayjet_disconnect(int pid);
-int  displayjet_create_surface(uint32_t width, uint32_t height, uint32_t *out_id);
+int  displayjet_create_surface(uint32_t width, uint32_t height,
+                                uint32_t *out_id);
 int  displayjet_destroy_surface(uint32_t id);
 int  displayjet_present(uint32_t id);
 int  displayjet_get_mode(dj_display_mode_t *mode);
 int  displayjet_surface_write(uint32_t id, const void *data, size_t size);
 int  displayjet_surface_read(uint32_t id, void *data, size_t size);
 int  displayjet_list_surfaces(dj_surface_info_t *infos, uint32_t *count);
+int  displayjet_request_access(uint32_t id, dj_access_grant_t *grant);
+int  displayjet_grant_access(uint32_t id, dj_access_grant_t *grant);
 
 #endif
